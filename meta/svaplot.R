@@ -1,282 +1,1441 @@
-library(xcms)
+# devtools::install_github('yufree/sva-devel')
+# devtools::install_github('yufree/MAIT')
+suppressWarnings(suppressPackageStartupMessages(library(xcms)))
 library(RColorBrewer)
-library(sva)
-library(limma)
+suppressPackageStartupMessages(library(sva))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(MAIT))
+suppressPackageStartupMessages(library(xMSannotator))
 library(CAMERA)
+library(qvalue)
+library(tsne)
 
-sva2 <- function(dat, mod, mod0 = NULL,n.sv=NULL, numSVmethod = "be") {
-        if(is.null(n.sv)){
-                n.sv = sva::num.sv(dat,mod,method=numSVmethod)
+svacor <-
+        function(xset,
+                 lv = NULL,
+                 annotation = F,
+                 polarity = "positive",
+                 method  = "medret",
+                 intensity = 'into',
+                 nSlaves = 12) {
+                data <- groupval(xset, method, intensity)
+                if(intensity == "intb"){
+                        data[is.na(data)] = 0
+                }
+                if (is.null(lv)) {
+                        lv <- xset@phenoData[, 1]
+                }
+                mz <- xset@groups[, 1]
+                rt <- xset@groups[, 4]
+                mod <- model.matrix(~ lv)
+                mod0 <- as.matrix(c(rep(1, ncol(data))))
+                svafit <- sva(data, mod)
+                if (svafit$n.sv == 0) {
+                        svaX <- model.matrix(~ lv)
+                        lmfit <- lmFit(data, svaX)
+                        signal <-
+                                lmfit$coef[, 1:nlevels(lv)] %*% t(svaX[, 1:nlevels(lv)])
+                        error <- data - signal
+                        rownames(signal) <-
+                                rownames(error) <- rownames(data)
+                        colnames(signal) <-
+                                colnames(error) <- colnames(data)
+                        pValues = f.pvalue(data, mod, mod0)
+                        qValues = qvalue(pValues)
+                        qValues = qValues$qvalues
+                        if (annotation) {
+                                dreport <-
+                                        annotateDiffreport(
+                                                xset,
+                                                metlin = T,
+                                                polarity = polarity,
+                                                nSlaves = nSlaves
+                                        )
+                                dreport <-
+                                        dreport[order(as.numeric(rownames(dreport))),]
+                                li <-
+                                        list(data,
+                                             signal,
+                                             error,
+                                             pValues,
+                                             qValues,
+                                             dreport,
+                                             mz,
+                                             rt)
+                                names(li) <-
+                                        c(
+                                                'data',
+                                                'signal',
+                                                'error',
+                                                'p-values',
+                                                'q-values',
+                                                'diffreport',
+                                                'mz',
+                                                'rt'
+                                        )
+                        } else{
+                                li <- list(data,
+                                           signal,
+                                           error,
+                                           pValues,
+                                           qValues,
+                                           mz,
+                                           rt)
+                                names(li) <-
+                                        c(
+                                                'data',
+                                                'signal',
+                                                'error',
+                                                'p-values',
+                                                'q-values',
+                                                'mz',
+                                                'rt'
+                                        )
+                        }
+                }
+                else{
+                        message('Data is correcting ...')
+                        svaX <- model.matrix(~ lv + svafit$sv)
+                        lmfit <- lmFit(data, svaX)
+                        batch <-
+                                lmfit$coef[, (nlevels(lv) + 1):(nlevels(lv) + svafit$n.sv)] %*% t(svaX[, (nlevels(lv) +
+                                                                                                                  1):(nlevels(lv) + svafit$n.sv)])
+                        signal <-
+                                lmfit$coef[, 1:nlevels(lv)] %*% t(svaX[, 1:nlevels(lv)])
+                        error <- data - signal - batch
+                        datacor <- signal + error
+                        svaX2 <- model.matrix(~ lv)
+                        lmfit2 <- lmFit(data, svaX2)
+                        signal2 <-
+                                lmfit2$coef[, 1:nlevels(lv)] %*% t(svaX2[, 1:nlevels(lv)])
+                        error2 <- data - signal2
+                        rownames(signal2) <-
+                                rownames(error2) <-
+                                rownames(datacor) <-
+                                rownames(signal) <-
+                                rownames(batch) <-
+                                rownames(error) <- rownames(data)
+                        colnames(signal2) <-
+                                colnames(error2) <-
+                                colnames(datacor) <-
+                                colnames(signal) <-
+                                colnames(batch) <-
+                                colnames(error) <- colnames(data)
+                        
+                        modSv = cbind(mod, svafit$sv)
+                        mod0Sv = cbind(mod0, svafit$sv)
+                        pValuesSv = f.pvalue(data, modSv, mod0Sv)
+                        qValuesSv = qvalue(pValuesSv)
+                        qValuesSv = qValuesSv$qvalues
+                        
+                        pValues = f.pvalue(data, mod, mod0)
+                        qValues = qvalue(pValues)
+                        qValues = qValues$qvalues
+                        if (annotation) {
+                                dreport <-
+                                        annotateDiffreport(
+                                                xset,
+                                                metlin = T,
+                                                polarity = polarity,
+                                                nSlaves = nSlaves
+                                        )
+                                dreport <-
+                                        dreport[order(as.numeric(rownames(dreport))),]
+                                li <-
+                                        list(
+                                                data,
+                                                datacor,
+                                                signal,
+                                                batch,
+                                                error,
+                                                signal2,
+                                                error2,
+                                                pValues,
+                                                qValues,
+                                                pValuesSv,
+                                                qValuesSv,
+                                                dreport,
+                                                svafit$pprob.gam,
+                                                svafit$pprob.b,
+                                                mz,
+                                                rt
+                                        )
+                                names(li) <-
+                                        c(
+                                                'data',
+                                                'dataCorrected',
+                                                'signal',
+                                                'batch',
+                                                'error',
+                                                'signal2',
+                                                'error2',
+                                                'p-values',
+                                                'q-values',
+                                                'p-valuesCorrected',
+                                                'q-valuesCorrected',
+                                                'diffreport',
+                                                'PosteriorProbabilitiesSurrogate',
+                                                'PosteriorProbabilitiesMod',
+                                                'mz',
+                                                'rt'
+                                        )
+                        }
+                        else{
+                                li <-
+                                        list(
+                                                data,
+                                                datacor,
+                                                signal,
+                                                batch,
+                                                error,
+                                                signal2,
+                                                error2,
+                                                pValues,
+                                                qValues,
+                                                pValuesSv,
+                                                qValuesSv,
+                                                svafit$pprob.gam,
+                                                svafit$pprob.b,
+                                                mz,
+                                                rt
+                                        )
+                                names(li) <-
+                                        c(
+                                                'data',
+                                                'dataCorrected',
+                                                'signal',
+                                                'batch',
+                                                'error',
+                                                'signal2',
+                                                'error2',
+                                                'p-values',
+                                                'q-values',
+                                                'p-valuesCorrected',
+                                                'q-valuesCorrected',
+                                                'PosteriorProbabilitiesSurrogate',
+                                                'PosteriorProbabilitiesMod',
+                                                'mz',
+                                                'rt'
+                                        )
+                        }
+                        message('Done!')
+                }
+                return(li)
+        }
+
+svapca <- function(list,
+                   center = T,
+                   scale = T,
+                   lv = NULL) {
+        data <- list$data
+        Signal <- list$signal
+        Batch <- list$batch
+        error <- list$error
+        datacor <- list$dataCorrected
+        if (is.null(lv)) {
+                pch = colnames(data)
+        } else{
+                pch = lv
         }
         
-        if(n.sv > 0){
-                cat(paste("Number of significant surrogate variables is: ",n.sv,"\n"))
-                return(irwsva2.build(dat=dat, mod=mod, mod0 = mod0,n.sv=n.sv))
-        }else{
-                cat("No significant surrogate variables\n"); return(list(sv=0,pprob.gam=0,pprob.b=0,n.sv=0))
+        par(mfrow = c(2, 5), mar = c(4, 4, 2.6, 1))
+        
+        pcao <- prcomp(t(data), center = center, scale = scale)
+        pcaoVars = signif(((pcao$sdev) ^ 2) / (sum((pcao$sdev) ^ 2)), 3) *
+                100
+        plot(pcao, type = "l", main = "PCA")
+        
+        pca <- prcomp(t(Signal), center = TRUE, scale = TRUE)
+        pcaVars = signif(((pca$sdev) ^ 2) / (sum((pca$sdev) ^ 2)), 3) *
+                100
+        plot(pca, type = "l", main = "PCA-signal")
+        
+        pcab <- prcomp(t(Batch), center = center, scale = scale)
+        pcabVars = signif(((pcab$sdev) ^ 2) / (sum((pcab$sdev) ^ 2)), 3) *
+                100
+        plot(pcab, type = "l", main = "PCA-batch")
+        
+        pcae <- prcomp(t(datacor), center = center, scale = scale)
+        pcaeVars = signif(((pcae$sdev) ^ 2) / (sum((pcae$sdev) ^ 2)), 3) *
+                100
+        plot(pcae, type = "l", main = "PCA-error")
+        
+        pcac <- prcomp(t(datacor), center = center, scale = scale)
+        pcacVars = signif(((pcac$sdev) ^ 2) / (sum((pcac$sdev) ^ 2)), 3) *
+                100
+        plot(pcac, type = "l", main = "PCA-corrected")
+        
+        plot(
+                pcao$x[, 1],
+                pcao$x[, 2],
+                xlab = paste("PC1:", pcaoVars[1], "% of Variance Explained"),
+                ylab = paste("PC2:", pcaoVars[2], "% of Variance Explained"),
+                pch = pch,
+                cex = 2,
+                main = "PCA"
+        )
+        
+        plot(
+                pca$x[, 1],
+                pca$x[, 2],
+                xlab = paste("PC1:", pcaVars[1], "% of Variance Explained"),
+                ylab = paste("PC2:", pcaVars[2], "% of Variance Explained"),
+                pch = pch,
+                cex = 2,
+                main = "PCA-signal"
+        )
+        
+        plot(
+                pcab$x[, 1],
+                pcab$x[, 2],
+                xlab = paste("PC1:", pcabVars[1], "% of Variance Explained"),
+                ylab = paste("PC2:", pcabVars[2], "% of Variance Explained"),
+                pch = pch,
+                cex = 2,
+                main = "PCA-batch"
+        )
+        
+        plot(
+                pcae$x[, 1],
+                pcae$x[, 2],
+                xlab = paste("PC1:", pcaeVars[1], "% of Variance Explained"),
+                ylab = paste("PC2:", pcaeVars[2], "% of Variance Explained"),
+                pch = pch,
+                cex = 2,
+                main = "PCA-error"
+        )
+        
+        plot(
+                pcac$x[, 1],
+                pcac$x[, 2],
+                xlab = paste("PC1:", pcacVars[1], "% of Variance Explained"),
+                ylab = paste("PC2:", pcacVars[2], "% of Variance Explained"),
+                pch = pch,
+                cex = 2,
+                main = "PCA-corrected"
+        )
+}
+
+svadata <- function(list,
+                    pqvalues = "sv",
+                    pt = 0.05,
+                    qt = 0.05) {
+        data <- list$data
+        signal2 <- list$signal2
+        datacor <- list$dataCorrected
+        pValues <- list$'p-values'
+        qValues <- list$'q-values'
+        pValuesSv <- list$'p-valuesCorrected'
+        qValuesSv <- list$'q-valuesCorrected'
+        mz <- list$mz
+        rt <- list$rt
+        if (is.null(signal2)) {
+                if (pqvalues == "anova" & sum(pValues < pt & qValues < qt) != 0) {
+                        message('No SV while p-values and q-values have results')
+                        data <- data[pValues < pt & qValues < qt,]
+                        mz <- mz[pValues < pt &
+                                         qValues < qt]
+                        rt <- rt[pValues < pt &
+                                         qValues < qt]
+                        li <-
+                                list(data, pValues < pt &
+                                             qValues < qt, mz, rt)
+                        names(li) <- c('data', 'pqvalues', 'mz', 'rt')
+                        return(li)
+                }
+                else{
+                        message('No SV while p-values and q-values have no results')
+                }
+        } else{
+                if (pqvalues == "anova" & sum(pValues < pt & qValues < qt) != 0) {
+                        message('Have SVs while p-values and q-values have results')
+                        data <- data[pValues < pt & qValues < qt,]
+                        mz <- mz[pValues < pt &
+                                         qValues < qt]
+                        rt <- rt[pValues < pt &
+                                         qValues < qt]
+                        li <-
+                                list(data, pValues < pt &
+                                             qValues < qt, mz, rt)
+                        names(li) <- c('data', 'pqvalues', mz, rt)
+                        return(li)
+                }
+                else if (pqvalues == "anova") {
+                        message('Have SVs while p-values and q-values have no results')
+                }
+                else if (pqvalues == "sv" &
+                         sum(pValuesSv < pt &
+                             qValuesSv < qt) != 0) {
+                        message('SVs corrected while p-values and q-values have results')
+                        data <-
+                                data[pValuesSv < pt &
+                                             qValuesSv < qt,]
+                        datacor <-
+                                datacor[pValuesSv < pt &
+                                                qValuesSv < qt,]
+                        mz <- mz[pValuesSv < pt &
+                                         qValuesSv < qt]
+                        rt <- rt[pValuesSv < pt &
+                                         qValuesSv < qt]
+                        li <-
+                                list(datacor,
+                                     data,
+                                     pValuesSv < pt &
+                                             qValuesSv < qt,
+                                     mz,
+                                     rt)
+                        names(li) <-
+                                c('dataCorrected',
+                                  'data',
+                                  'pqvalues',
+                                  'mz',
+                                  'rt')
+                        return(li)
+                }
+                else{
+                        message('SVs corrected while p-values and q-values have no results')
+                }
         }
 }
 
-irwsva2.build <- function(dat, mod, mod0 = NULL,n.sv) {
-        n <- ncol(dat)
-        m <- nrow(dat)
-        if(is.null(mod0)){mod0 <- mod[,1]}
-        Id <- diag(n)
-        resid <- dat %*% (Id - mod %*% solve(t(mod) %*% mod) %*% t(mod))  
-        uu <- eigen(t(resid)%*%resid)
-        vv <- uu$vectors
-        ndf <- n - dim(mod)[2]
+svaplot <- function(list,
+                    pqvalues = "sv",
+                    pt = 0.05,
+                    qt = 0.05) {
+        data <- list$data
+        signal <- list$signal
+        signal2 <- list$signal2
+        batch <- list$batch
+        error <- list$error
+        error2 <- list$error2
+        datacor <- list$dataCorrected
+        pValues <- list$'p-values'
+        qValues <- list$'q-values'
+        pValuesSv <- list$'p-valuesCorrected'
+        qValuesSv <- list$'q-valuesCorrected'
         
-        pprob <- rep(1,m)
-        one <- rep(1,n)
-        Id <- diag(n)
-        df1 <- dim(mod)[2] + n.sv
-        df0 <- dim(mod0)[2]  + n.sv
-        dats2 = dat
+        icolors <-
+                colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(100)
+        
+        if (is.null(signal2)) {
+                if (pqvalues == "anova" & sum(pValues < pt & qValues < qt) != 0) {
+                        message('No SV while p-values and q-values have results')
+                        layout(matrix(rep(
+                                c(1, 1, 2, 2, 3, 3, 4, 4, 5), 9
+                        ), 9, 9, byrow = TRUE))
+                        par(mar = c(3, 5, 1, 1))
+                        data <- data[pValues < pt & qValues < qt,]
+                        signal <-
+                                signal[pValues < pt &
+                                               qValues < qt,]
+                        error <-
+                                error[pValues < pt & qValues < qt,]
+                        zlim <- range(c(data, signal, error))
+                        
+                        image(
+                                t(data),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        data
+                                ) - 1)),
+                                labels = colnames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        data
+                                ) - 1)),
+                                labels = rownames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        image(
+                                t(signal),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-signal',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        signal
+                                ) - 1)),
+                                labels = colnames(signal),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        signal
+                                ) - 1)),
+                                labels = rownames(signal),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        image(
+                                t(error),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-error',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        error
+                                ) - 1)),
+                                labels = colnames(error),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        error
+                                ) - 1)),
+                                labels = rownames(error),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        breaks <-
+                                seq(zlim[1], zlim[2], round((zlim[2] - zlim[1]) / 10))
+                        poly <-
+                                vector(mode = "list", length(icolors))
+                        plot(
+                                1,
+                                1,
+                                t = "n",
+                                xlim = c(0, 1),
+                                ylim = zlim,
+                                xaxt = 'n',
+                                yaxt = 'n',
+                                xaxs = "i",
+                                yaxs = "i",
+                                ylab = '',
+                                xlab = 'intensity',
+                                frame.plot = F
+                        )
+                        axis(
+                                4,
+                                at = breaks,
+                                labels = round(breaks),
+                                las = 1,
+                                pos = 0.4
+                        )
+                        bks <-
+                                seq(zlim[1], zlim[2], length.out = (length(icolors) + 1))
+                        for (i in seq(poly)) {
+                                polygon(
+                                        c(0.1, 0.1, 0.3, 0.3),
+                                        c(bks[i], bks[i + 1], bks[i + 1], bks[i]),
+                                        col = icolors[i],
+                                        border = NA
+                                )
+                        }
+                        li <-
+                                list(data, pValues < pt &
+                                             qValues < qt)
+                        names(li) <- c('data', 'pqvalues')
+                        return(li)
+                }
+                else{
+                        message('No SV while p-values and q-values have no results')
+                        layout(matrix(rep(
+                                c(1, 1, 1, 2, 2, 3, 3, 4), 8
+                        ), 8, 8, byrow = TRUE))
+                        par(mar = c(3, 6, 2, 3))
+                        zlim <- range(c(data, signal, error))
+                        
+                        image(
+                                t(data),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        data
+                                ) - 1)),
+                                labels = colnames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        data
+                                ) - 1)),
+                                labels = rownames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        par(mar = c(3, 3, 2, 1))
+                        image(
+                                t(signal),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-signal',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        signal
+                                ) - 1)),
+                                labels = colnames(signal),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        par(mar = c(3, 3, 2, 1))
+                        image(
+                                t(error),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-error',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        error
+                                ) - 1)),
+                                labels = colnames(error),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        breaks <-
+                                seq(zlim[1], zlim[2], round((zlim[2] - zlim[1]) / 10))
+                        poly <-
+                                vector(mode = "list", length(icolors))
+                        par(mar = c(3, 0, 2, 3))
+                        plot(
+                                1,
+                                1,
+                                t = "n",
+                                xlim = c(0, 1),
+                                ylim = zlim,
+                                xaxt = 'n',
+                                yaxt = 'n',
+                                xaxs = "i",
+                                yaxs = "i",
+                                ylab = '',
+                                xlab = 'intensity',
+                                frame.plot = F
+                        )
+                        axis(
+                                4,
+                                at = breaks,
+                                labels = round(breaks),
+                                las = 1,
+                                pos = 0.4
+                        )
+                        bks <-
+                                seq(zlim[1], zlim[2], length.out = (length(icolors) + 1))
+                        for (i in seq(poly)) {
+                                polygon(
+                                        c(0.1, 0.1, 0.3, 0.3),
+                                        c(bks[i], bks[i + 1], bks[i + 1], bks[i]),
+                                        col = icolors[i],
+                                        border = NA
+                                )
+                        }
+                }
+        } else{
+                if (pqvalues == "anova" & sum(pValues < pt & qValues < qt) != 0) {
+                        message('Have SVs while p-values and q-values have results')
+                        layout(matrix(rep(
+                                c(1, 1, 2, 2, 3, 3, 4, 4, 5), 9
+                        ), 9, 9, byrow = TRUE))
+                        par(mar = c(3, 5, 1, 1))
+                        data <- data[pValues < pt & qValues < qt,]
+                        signal <-
+                                signal2[pValues < pt &
+                                                qValues < qt,]
+                        error <-
+                                error2[pValues < pt &
+                                               qValues < qt,]
+                        zlim <- range(c(data, signal, error))
+                        
+                        image(
+                                t(data),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        data
+                                ) - 1)),
+                                labels = colnames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        data
+                                ) - 1)),
+                                labels = rownames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        image(
+                                t(signal),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-signal',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        signal
+                                ) - 1)),
+                                labels = colnames(signal),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        signal
+                                ) - 1)),
+                                labels = rownames(signal),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        image(
+                                t(error),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-error',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        error
+                                ) - 1)),
+                                labels = colnames(error),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        error
+                                ) - 1)),
+                                labels = rownames(error),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        breaks <-
+                                seq(zlim[1], zlim[2], round((zlim[2] - zlim[1]) / 10))
+                        poly <-
+                                vector(mode = "list", length(icolors))
+                        plot(
+                                1,
+                                1,
+                                t = "n",
+                                xlim = c(0, 1),
+                                ylim = zlim,
+                                xaxt = 'n',
+                                yaxt = 'n',
+                                xaxs = "i",
+                                yaxs = "i",
+                                ylab = '',
+                                xlab = 'intensity',
+                                frame.plot = F
+                        )
+                        axis(
+                                4,
+                                at = breaks,
+                                labels = round(breaks),
+                                las = 1,
+                                pos = 0.4
+                        )
+                        bks <-
+                                seq(zlim[1], zlim[2], length.out = (length(icolors) + 1))
+                        for (i in seq(poly)) {
+                                polygon(
+                                        c(0.1, 0.1, 0.3, 0.3),
+                                        c(bks[i], bks[i + 1], bks[i + 1], bks[i]),
+                                        col = icolors[i],
+                                        border = NA
+                                )
+                        }
+                        li <-
+                                list(data, pValues < pt &
+                                             qValues < qt)
+                        names(li) <- c('data', 'pqvalues')
+                        return(li)
+                }
+                else if (pqvalues == "anova") {
+                        message('Have SVs while p-values and q-values have no results')
+                        layout(matrix(rep(
+                                c(1, 1, 1, 2, 2, 3, 3, 4), 8
+                        ), 8, 8, byrow = TRUE))
+                        par(mar = c(3, 6, 2, 3))
+                        zlim <- range(c(data, signal2, error2))
+                        
+                        image(
+                                t(data),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        data
+                                ) - 1)),
+                                labels = colnames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        data
+                                ) - 1)),
+                                labels = rownames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        par(mar = c(3, 3, 2, 1))
+                        image(
+                                t(signal2),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-signal',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (
+                                        ncol(signal2) - 1
+                                )),
+                                labels = colnames(signal2),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        par(mar = c(3, 3, 2, 1))
+                        image(
+                                t(error2),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-error',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        error2
+                                ) - 1)),
+                                labels = colnames(error2),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        breaks <-
+                                seq(zlim[1], zlim[2], round((zlim[2] - zlim[1]) / 10))
+                        poly <-
+                                vector(mode = "list", length(icolors))
+                        par(mar = c(3, 0, 2, 3))
+                        plot(
+                                1,
+                                1,
+                                t = "n",
+                                xlim = c(0, 1),
+                                ylim = zlim,
+                                xaxt = 'n',
+                                yaxt = 'n',
+                                xaxs = "i",
+                                yaxs = "i",
+                                ylab = '',
+                                xlab = 'intensity',
+                                frame.plot = F
+                        )
+                        axis(
+                                4,
+                                at = breaks,
+                                labels = round(breaks),
+                                las = 1,
+                                pos = 0.4
+                        )
+                        bks <-
+                                seq(zlim[1], zlim[2], length.out = (length(icolors) + 1))
+                        for (i in seq(poly)) {
+                                polygon(
+                                        c(0.1, 0.1, 0.3, 0.3),
+                                        c(bks[i], bks[i + 1], bks[i + 1], bks[i]),
+                                        col = icolors[i],
+                                        border = NA
+                                )
+                        }
+                }
+                else if (pqvalues == "sv" &
+                         sum(pValuesSv < pt &
+                             qValuesSv < qt) != 0) {
+                        message('SVs corrected while p-values and q-values have results')
+                        layout(matrix(rep(
+                                c(1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6), 11
+                        ), 11, 11, byrow = TRUE))
+                        par(mar = c(3, 4, 2, 1))
+                        data <-
+                                data[pValuesSv < pt &
+                                             qValuesSv < qt,]
+                        signal <- signal[pValuesSv < pt &
+                                                 qValuesSv < qt,]
+                        batch <-
+                                batch[pValuesSv < pt &
+                                              qValuesSv < qt,]
+                        error <-
+                                error[pValuesSv < pt &
+                                              qValuesSv < qt,]
+                        datacor <-
+                                datacor[pValuesSv < pt &
+                                                qValuesSv < qt,]
+                        zlim <-
+                                range(c(data, signal, batch, error, datacor))
+                        
+                        image(
+                                t(data),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        data
+                                ) - 1)),
+                                labels = colnames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        data
+                                ) - 1)),
+                                labels = rownames(data),
+                                cex.axis = 0.618,
+                                las = 1
+                        )
+                        
+                        image(
+                                t(signal),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-signal',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        signal
+                                ) - 1)),
+                                labels = colnames(signal),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        signal
+                                ) - 1)),
+                                labels = rownames(signal),
+                                cex.axis = 0.618,
+                                las = 1
+                        )
+                        
+                        image(
+                                t(batch),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-batch',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        batch
+                                ) - 1)),
+                                labels = colnames(batch),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        batch
+                                ) - 1)),
+                                labels = rownames(batch),
+                                cex.axis = 0.618,
+                                las = 1
+                        )
+                        
+                        image(
+                                t(error),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-error',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        error
+                                ) - 1)),
+                                labels = colnames(error),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        error
+                                ) - 1)),
+                                labels = rownames(error),
+                                cex.axis = 0.618,
+                                las = 1
+                        )
+                        
+                        image(
+                                t(datacor),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-corrected',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (
+                                        ncol(datacor) - 1
+                                )),
+                                labels = colnames(datacor),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (
+                                        nrow(datacor) - 1
+                                )),
+                                labels = rownames(datacor),
+                                cex.axis = 0.618,
+                                las = 1
+                        )
+                        
+                        breaks <-
+                                seq(zlim[1], zlim[2], round((zlim[2] - zlim[1]) / 10))
+                        poly <-
+                                vector(mode = "list", length(icolors))
+                        par(mar = c(3, 0, 2, 3))
+                        plot(
+                                1,
+                                1,
+                                t = "n",
+                                xlim = c(0, 1),
+                                ylim = zlim,
+                                xaxt = 'n',
+                                yaxt = 'n',
+                                xaxs = "i",
+                                yaxs = "i",
+                                ylab = '',
+                                xlab = 'intensity',
+                                frame.plot = F
+                        )
+                        axis(
+                                4,
+                                at = breaks,
+                                labels = round(breaks),
+                                las = 1,
+                                pos = 0.4
+                        )
+                        bks <-
+                                seq(zlim[1], zlim[2], length.out = (length(icolors) + 1))
+                        for (i in seq(poly)) {
+                                polygon(
+                                        c(0.1, 0.1, 0.3, 0.3),
+                                        c(bks[i], bks[i + 1], bks[i + 1], bks[i]),
+                                        col = icolors[i],
+                                        border = NA
+                                )
+                        }
+                        li <-
+                                list(datacor,
+                                     data,
+                                     pValuesSv < pt &
+                                             qValuesSv < qt)
+                        names(li) <-
+                                c('dataCorrected', 'data', 'pqvalues')
+                        return(li)
+                }
+                else{
+                        message('SVs corrected while p-values and q-values have no results')
+                        layout(matrix(rep(
+                                c(1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 6), 13
+                        ), 13, 13, byrow = TRUE))
+                        par(mar = c(3, 6, 2, 3))
+                        zlim <-
+                                range(c(signal, data, batch, error, datacor))
+                        
+                        image(
+                                t(data),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        data
+                                ) - 1)),
+                                labels = colnames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        axis(
+                                2,
+                                at = seq(0, 1, 1 / (nrow(
+                                        data
+                                ) - 1)),
+                                labels = rownames(data),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        par(mar = c(3, 3, 2, 1))
+                        image(
+                                t(signal),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-signal',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        signal
+                                ) - 1)),
+                                labels = colnames(signal),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        par(mar = c(3, 3, 2, 1))
+                        image(
+                                t(batch),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-batch',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        batch
+                                ) - 1)),
+                                labels = colnames(batch),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        par(mar = c(3, 3, 2, 1))
+                        image(
+                                t(error),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-error',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (ncol(
+                                        error
+                                ) - 1)),
+                                labels = colnames(error),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        par(mar = c(3, 6, 2, 3))
+                        image(
+                                t(datacor),
+                                col = icolors,
+                                xlab = 'samples',
+                                main = 'peaks-corrected',
+                                xaxt = "n",
+                                yaxt = "n",
+                                zlim = zlim
+                        )
+                        axis(
+                                1,
+                                at = seq(0, 1, 1 / (
+                                        ncol(datacor) - 1
+                                )),
+                                labels = colnames(datacor),
+                                cex.axis = 0.618,
+                                las = 2
+                        )
+                        
+                        breaks <-
+                                seq(zlim[1], zlim[2], round((zlim[2] - zlim[1]) / 10))
+                        poly <-
+                                vector(mode = "list", length(icolors))
+                        par(mar = c(3, 0, 2, 3))
+                        plot(
+                                1,
+                                1,
+                                t = "n",
+                                xlim = c(0, 1),
+                                ylim = zlim,
+                                xaxt = 'n',
+                                yaxt = 'n',
+                                xaxs = "i",
+                                yaxs = "i",
+                                ylab = '',
+                                xlab = 'intensity',
+                                frame.plot = F
+                        )
+                        axis(
+                                4,
+                                at = breaks,
+                                labels = round(breaks),
+                                las = 1,
+                                pos = 0.4
+                        )
+                        bks <-
+                                seq(zlim[1], zlim[2], length.out = (length(icolors) + 1))
+                        for (i in seq(poly)) {
+                                polygon(
+                                        c(0.1, 0.1, 0.3, 0.3),
+                                        c(bks[i], bks[i + 1], bks[i + 1], bks[i]),
+                                        col = icolors[i],
+                                        border = NA
+                                )
+                        }
+                }
+        }
+}
 
-        rm(resid)
-        i=1
-        
-        while(num.sv(dats2,mod,method="be") != 0){
-                mod.b <- cbind(mod,uu$vectors[,1:n.sv])
-                mod0.b <- cbind(mod0,uu$vectors[,1:n.sv])
-                ptmp <- sva::f.pvalue(dat,mod.b,mod0.b)
-                pprob.b <- (1-p.adjust(ptmp,"BH"))
+svaanno <-
+        function(raw,
+                 lv,
+                 polarity = "positive",
+                 projectname = "test") {
+                if (is.null(raw$dataCorrected)) {
+                        table <- MAITbuilder(
+                                data = raw$data,
+                                spectraID = NULL,
+                                masses = raw$mz,
+                                rt = raw$rt,
+                                spectraEstimation = TRUE,
+                                significantFeatures = T,
+                                classes = lv,
+                                rtRange = 0.2,
+                                corThresh = 0.7
+                        )
+                } else{
+                        table <- MAITbuilder(
+                                data = raw$dataCorrected,
+                                spectraID = NULL,
+                                masses = raw$mz,
+                                rt = raw$rt,
+                                spectraEstimation = TRUE,
+                                significantFeatures = T,
+                                classes = lv,
+                                rtRange = 0.2,
+                                corThresh = 0.7
+                        )
+                }
+                if (polarity == 'positive') {
+                        importMAIT <- Biotransformations(
+                                MAIT.object = table,
+                                adductAnnotation = TRUE,
+                                peakPrecision = 0.005,
+                                adductTable = NULL
+                        )
+                } else{
+                        importMAIT <- Biotransformations(
+                                MAIT.object = table,
+                                adductAnnotation = TRUE,
+                                peakPrecision = 0.005,
+                                adductTable = "negAdducts"
+                        )
+                }
                 
-                mod.gam <- cbind(mod0,uu$vectors[,1:n.sv])
-                mod0.gam <- cbind(mod0)
-                ptmp <- sva::f.pvalue(dat,mod.gam,mod0.gam)
-                pprob.gam <- (1-p.adjust(ptmp,"BH"))
-                pprob <- pprob.gam*(1-pprob.b)
-                dats2 <- dat*pprob.b*(1-pprob.gam)
-                dats2 <- dats2 - rowMeans(dats2)
-                dats <- dat*pprob
-                dats <- dats - rowMeans(dats)
-                uu <- eigen(t(dats)%*%dats)
-                n.sv <- sva::num.sv(dats,mod,method='be')
-                cat(paste(i," "))
-                i = i+1
+                importMAIT <- identifyMetabolites(
+                        MAIT.object = importMAIT,
+                        peakTolerance = 0.005,
+                        polarity = polarity,
+                        projectname = projectname
+                )
+                return(importMAIT)
         }
-        
-        sv = svd(dats)$v[,1:n.sv]
-        retval <- list(sv=sv,pprob.gam = pprob.gam, pprob.b=pprob.b,n.sv=n.sv)
-        return(retval)
-        
-}
-
-svacor <- function(xset,lv,sva2 = F,B=5,annotation=F,polarity = "positive",nSlaves=12){
-        data <- groupval(xset,"maxint", value='into')
-        mod <- model.matrix(~lv)
-        mod0 <- as.matrix(c(rep(1,ncol(data))))
-        if (sva2){
-                svafit <- sva2(data,mod)
-        }else{
-                svafit <- sva(data,mod,B=B)
+# other database options: KEGG, LipidMaps, T3DB
+# queryadductlist=c("M+2H","M+H+NH4","M+ACN+2H","M+2ACN+2H","M+H","M+NH4","M+Na","M+ACN+H","M+ACN+Na","M+2ACN+H","2M+H","2M+Na","2M+ACN+H","M+2Na-H","M+H-H2O","M+H-2H2O") 
+# other options: c("M-H","M-H2O-H","M+Na-2H","M+Cl","M+FA-H"); c("positive"); c("negative"); c("all");see data(adduct_table) for complete list
+svafanno <- function(raw,
+                     outloc = "./result/",
+                     mode = 'pos',
+                     db_name = 'HMDB') {
+        data(adduct_weights)
+        if (is.null(raw$dataCorrected)) {
+                data <- raw$data
         }
-        if (svafit$n.sv == 0){
-            svaX <- model.matrix(~lv)
-            lmfit <- lmFit(data,svaX)
-            Signal<-lmfit$coef[,1:nlevels(lv)]%*%t(svaX[,1:nlevels(lv)])
-            error <- data-Signal
-            rownames(Signal) <- rownames(error) <- rownames(data)
-            colnames(Signal) <- colnames(error) <- colnames(data)
-            pValues = f.pvalue(data,mod,mod0)
-            qValues = p.adjust(pValues,method = "BH")
-            if(annotation){
-                dreport <- annotateDiffreport(xset,metlin = T,polarity = polarity,nSlaves = nSlaves)
-                dreport <- dreport[order(as.numeric(rownames(dreport))),]
-                return(list(data,Signal,error,pValues,qValues,dreport))
-            }else{
-                return(list(data,Signal,error,pValues,qValues))
-            }
-        }else{
-            svaX <- model.matrix(~lv+svafit$sv)
-            lmfit <- lmFit(data,svaX)
-            Batch<- lmfit$coef[,(nlevels(lv)+1):(nlevels(lv)+svafit$n.sv)]%*%t(svaX[,(nlevels(lv)+1):(nlevels(lv)+svafit$n.sv)])
-            Signal<-lmfit$coef[,1:nlevels(lv)]%*%t(svaX[,1:nlevels(lv)])
-            error <- data-Signal-Batch
-            rownames(Signal) <- rownames(Batch) <- rownames(error) <- rownames(data)
-            colnames(Signal) <- colnames(Batch) <- colnames(error) <- colnames(data)
-            modSv = cbind(mod,svafit$sv)
-            mod0Sv = cbind(mod0,svafit$sv)
-            pValuesSv = f.pvalue(data,modSv,mod0Sv)
-            qValuesSv = p.adjust(pValuesSv,method="BH")
-        
-            pValues = f.pvalue(data,mod,mod0)
-            qValues = p.adjust(pValues,method = "BH")
-            if(annotation){
-                dreport <- annotateDiffreport(xset,metlin = T,polarity = polarity,nSlaves = nSlaves)
-                dreport <- dreport[order(as.numeric(rownames(dreport))),]
-                return(list(data,Signal,Batch,error,pValues,qValues,pValuesSv,qValuesSv,dreport,svafit$pprob.gam,svafit$pprob.b))
-            }else{
-                return(list(data,Signal,Batch,error,pValues,qValues,pValuesSv,qValuesSv,svafit$pprob.gam,svafit$pprob.b))
-            }
-        }     
+        else{
+                data <- raw$dataCorrected
+        }
+        mz <- raw$mz
+        time <- raw$rt
+        data <- as.data.frame(cbind(mz, time, data))
+        annotres <-
+                multilevelannotation(
+                        dataA = data,
+                        max.mz.diff = 5,
+                        max.rt.diff = 10,
+                        cormethod = "pearson",
+                        num_nodes = 12,
+                        queryadductlist = c(
+                                "M+2H",
+                                "M+H+NH4",
+                                "M+ACN+2H",
+                                "M+2ACN+2H",
+                                "M+H",
+                                "M+NH4",
+                                "M+Na",
+                                "M+ACN+H",
+                                "M+ACN+Na",
+                                "M+2ACN+H",
+                                "2M+H",
+                                "2M+Na",
+                                "2M+ACN+H",
+                                "M+2Na-H",
+                                "M+H-H2O",
+                                "M+H-2H2O"
+                        ),
+                        mode = mode,
+                        outloc = outloc,
+                        db_name = db_name,
+                        adduct_weights = adduct_weights,
+                        num_sets = 1000,
+                        allsteps = TRUE,
+                        corthresh = 0.7,
+                        NOPS_check = TRUE,
+                        customIDs = NA,
+                        missing.value = NA,
+                        hclustmethod = "complete",
+                        deepsplit = 2,
+                        networktype = "unsigned",
+                        minclustsize = 10,
+                        module.merge.dissimilarity = 0.2,
+                        filter.by = c("M+H"),
+                        biofluid.location = NA,
+                        origin = NA,
+                        status = "Detected and Quantified",
+                        boostIDs = NA,
+                        max_isp = 5,
+                        HMDBselect = "union",
+                        mass_defect_window = 0.01,
+                        pathwaycheckmode = "pm",
+                        mass_defect_mode = mode
+                )
+        return(annotres)
 }
 
-svapca <- function(list){
-        data <- list[[1]]
-        Signal <- list[[2]]
-        Batch <- list[[3]]
-        error <- list[[4]]
-        
-        par(mfrow=c(2,4),mar = c(2.75, 2.2, 2.6, 1))
-        pcao <- prcomp(t(data), center=TRUE, scale=TRUE)
-        plot(pcao, type = "l",main = "PCA")
-        
-        pca <- prcomp(t(Signal), center=TRUE, scale=TRUE) 
-        plot(pca, type = "l",main = "PCA-signal")
-        
-        pcab <- prcomp(t(Batch), center=TRUE, scale=TRUE)
-        plot(pcab, type = "l",main = "PCA-batch")
-        
-        pcae <- prcomp(t(error), center=TRUE, scale=TRUE)
-        plot(pcae, type = "l",main = "PCA-error")
-        
-        plot(pcao$x[,1], 
-             pcao$x[,2], 
-             xlab="PC1",
-             ylab="PC2",
-             pch=colnames(data),
-             cex=2,
-             main = "PCA")
-        
-        plot(pca$x[,1], 
-             pca$x[,2], 
-             xlab="PC1",
-             ylab="PC2",
-             pch=colnames(Signal),
-             cex=2,
-             main = "PCA-signal")
-        
-        plot(pcab$x[,1], 
-             pcab$x[,2], 
-             xlab="PC1",
-             ylab="PC2",
-             pch=colnames(Batch),
-             cex=2,
-             main = "PCA-batch")
-        
-        plot(pcae$x[,1], 
-             pcae$x[,2], 
-             xlab="PC1",
-             ylab="PC2",
-             pch=colnames(error),
-             cex=2,
-             main = "PCA-error")
-}
-
-svaplot <- function(list, pqvalues="sv"){
-        data <- list[[1]]
-        Signal <- list[[2]]
-        Batch <- list[[3]]
-        error <- list[[4]]
-        pValues <- list[[5]]
-        qValues <- list[[6]]
-        pValuesSv <- list[[7]]
-        qValuesSv <- list[[8]]
-        par(mfrow=c(1,5),mar = c(3,3,1,1))
-        icolors <- colorRampPalette(rev(brewer.pal(11,"RdYlBu")))(100)
-        if(pqvalues == "anova"){
-                zlim <- range(c(Signal[pValues<0.05&qValues<0.05,],data[pValues<0.05&qValues<0.05,],Batch[pValues<0.05&qValues<0.05,],error[pValues<0.05&qValues<0.05,]))
-    
-                image(t(data[pValues<0.05&qValues<0.05,]),col=icolors,xlab = 'samples',ylab = 'peaks',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(data),cex.axis=0.618,las=2)
-    
-                image(t(Signal[pValues<0.05&qValues<0.05,]),col=icolors,xlab = 'samples',ylab = 'peaks-signal',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(Signal),cex.axis=0.618,las=2)
-    
-                image(t(Batch[pValues<0.05&qValues<0.05,]),col=icolors,xlab = 'samples',ylab = 'peaks-batch',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(Batch),cex.axis=0.618,las=2)
-    
-                image(t(error[pValues<0.05&qValues<0.05,]),col=icolors,xlab = 'samples',ylab = 'peaks-error',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(error),cex.axis=0.618,las=2)
-    
-                breaks <- seq(zlim[1], zlim[2], round((zlim[2]-zlim[1])/10))
-                poly <- vector(mode="list", length(icolors))
-                plot(1,1,t="n",xlim=c(0,1), ylim=zlim,xaxt='n', yaxt='n',xaxs="i", yaxs="i",ylab = '',xlab = 'intensity',frame.plot=F)
-                axis(4,at=breaks,labels = round(breaks),las=1,pos=0.4)
-                bks <- seq(zlim[1], zlim[2], length.out=(length(icolors)+1))
-                for(i in seq(poly)){
-                        polygon(c(0.1,0.1,0.3,0.3), c(bks[i], bks[i+1], bks[i+1], bks[i]),  col=icolors[i], border=NA)
-                }
-                return(Signal[pValues<0.05&qValues<0.05,])
-        }else if(pqvalues == "sv"){
-                zlim <- range(c(Signal[pValuesSv<0.05&qValuesSv<0.05,],data[pValuesSv<0.05&qValuesSv<0.05,],Batch[pValuesSv<0.05&qValuesSv<0.05,],error[pValuesSv<0.05&qValuesSv<0.05,]))
-
-                image(t(data[pValuesSv<0.05&qValuesSv<0.05,]),col=icolors,xlab = 'samples',ylab = 'peaks',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(data),cex.axis=0.618,las=2)
-
-                image(t(Signal[pValuesSv<0.05&qValuesSv<0.05,]),col=icolors,xlab = 'samples',ylab = 'peaks-signal',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(Signal),cex.axis=0.618,las=2)
-
-                image(t(Batch[pValuesSv<0.05&qValuesSv<0.05,]),col=icolors,xlab = 'samples',ylab = 'peaks-batch',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(Batch),cex.axis=0.618,las=2)
-
-                image(t(error[pValuesSv<0.05&qValuesSv<0.05,]),col=icolors,xlab = 'samples',ylab = 'peaks-error',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(error),cex.axis=0.618,las=2)
-
-                breaks <- seq(zlim[1], zlim[2], round((zlim[2]-zlim[1])/10))
-                poly <- vector(mode="list", length(icolors))
-                plot(1,1,t="n",xlim=c(0,1), ylim=zlim,xaxt='n', yaxt='n',xaxs="i", yaxs="i",ylab = '',xlab = 'intensity',frame.plot=F)
-                axis(4,at=breaks,labels = round(breaks),las=1,pos=0.4)
-                bks <- seq(zlim[1], zlim[2], length.out=(length(icolors)+1))
-                for(i in seq(poly)){
-                        polygon(c(0.1,0.1,0.3,0.3), c(bks[i], bks[i+1], bks[i+1], bks[i]),  col=icolors[i], border=NA)
-                }
-                return(Signal[pValuesSv<0.05&qValuesSv<0.05,])
-        }else{
-                zlim <- range(c(Signal,data,Batch,error))
-    
-                image(t(data),col=icolors,xlab = 'samples',ylab = 'peaks',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(data),cex.axis=0.618,las=2)
-    
-                image(t(Signal),col=icolors,xlab = 'samples',ylab = 'peaks-signal',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(Signal),cex.axis=0.618,las=2)
-    
-                image(t(Batch),col=icolors,xlab = 'samples',ylab = 'peaks-batch',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(Batch),cex.axis=0.618,las=2)
-    
-                image(t(error),col=icolors,xlab = 'samples',ylab = 'peaks-error',xaxt="n",yaxt="n",zlim=zlim)
-                axis(1, at=seq(0,1,1/(ncol(data)-1)), labels=colnames(error),cex.axis=0.618,las=2)
-    
-                breaks <- seq(zlim[1], zlim[2], round((zlim[2]-zlim[1])/10))
-                poly <- vector(mode="list", length(icolors))
-                plot(1,1,t="n",xlim=c(0,1), ylim=zlim,xaxt='n', yaxt='n',xaxs="i", yaxs="i",ylab = '',xlab = 'intensity',frame.plot=F)
-                axis(4,at=breaks,labels = round(breaks),las=1,pos=0.4)
-                bks <- seq(zlim[1], zlim[2], length.out=(length(icolors)+1))
-                for(i in seq(poly)){
-                        polygon(c(0.1,0.1,0.3,0.3), c(bks[i], bks[i+1], bks[i+1], bks[i]),  col=icolors[i], border=NA)
-                }
+svaupload <- function(xset,
+                      lv = NULL,
+                      polarity = "positive",
+                      value = 'into',
+                      nSlaves = 12){
+        raw <- svacor(xset,lv=lv,annotation = F,polarity = polarity,nSlaves = nSlaves)
+        if (is.null(raw$dataCorrected)) {
+                data <- raw$data
+                data <- rbind(group = as.character(xset@phenoData[, 1]), data)
+                write.csv(data, file='Peaklist.csv')
+                return(data)
+        }
+        else{
+                datacor <- raw$dataCorrected
+                data <- raw$data
+                data <- rbind(group = as.character(xset@phenoData[, 1]), data)
+                write.csv(datacor, file='Peaklistcor.csv')
+                write.csv(data, file='Peaklist.csv')
+                return(list(data,datacor))
         }
 }
 
-svameta <- function(xset,lv,polarity = "positive",nSlaves=12,sva2 = TRUE){
-        dreport <- annotateDiffreport(xset,metlin = T,polarity = polarity,nSlaves = nSlaves)
-        dreport <- dreport[order(as.numeric(rownames(dreport))),]
-        data <- groupval(xset,"maxint", value='into')
-        mod <- model.matrix(~lv)
-        mod0 <- as.matrix(c(rep(1,ncol(data))))
-        if (sva2){
-                svafit <- sva2(data,mod)
+svatsne <- function(df,cor=F){
+        if(cor){
+                rtsne_out <- tsne(t(df$datacor))
         }else{
-                svafit <- sva(data,mod)
+                rtsne_out <- tsne(t(df$data))
         }
-        svaX <- model.matrix(~lv+svafit$sv)
-        lmfit <- lmFit(data,svaX)
-        Batch<- lmfit$coef[,(nlevels(lv)+1):(nlevels(lv)+svafit$n.sv)]%*%t(svaX[,(nlevels(lv)+1):(nlevels(lv)+svafit$n.sv)])
-        Signal<-lmfit$coef[,1:nlevels(lv)]%*%t(svaX[,1:nlevels(lv)])
-        error <- data-Signal-Batch
-        rownames(Signal) <- rownames(Batch) <- rownames(error) <- rownames(data)
-        colnames(Signal) <- colnames(Batch) <- colnames(error) <- colnames(data)
-        modSv = cbind(mod,svafit$sv)
-        mod0Sv = cbind(mod0,svafit$sv)
-        pValuesSv = f.pvalue(data,modSv,mod0Sv)
-        qValuesSv = p.adjust(pValuesSv,method="BH")
-        
-        pValues = f.pvalue(data,mod,mod0)
-        qValues = p.adjust(pValues,method = "BH")
-        
-        dataout <- cbind(dreport,Signal,pValues,qValues,pValuesSv,qValuesSv)
-        return(dataout)
+        plot(rtsne_out,t='n')
+        text(rtsne_out,labels=colnames(df$data))
 }

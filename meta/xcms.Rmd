@@ -58,7 +58,7 @@ xset2 <- group(xset2, bw = 10)
 进行了保留时间矫正后会出现某些时间点的数据缺失，这样需要从原始数据中读入这些缺失值。
 
 ```{r}
-xset3 <- fillPeaks(xset2) 
+xset3 <- fillPeaks(xset2,BPPARAM=SnowParam(workers = 4)) 
 ```
 
 ## 生成报告
@@ -70,12 +70,157 @@ reporttab <- diffreport(xset3, "WT", "KO", "example", 10,metlin = 0.15, h=480, w
 reporttab[1:3,]
 ```
 
+## 批次效应
+
+```{r}
+df <- svacor(xset3)
+svatsne(df)
+lv <- phenoData(xset3)[,1]
+mod <- model.matrix(~lv)
+mod0 <- as.matrix(c(rep(1,ncol(df$data))))
+svafit <- sva(df$data,mod)
+
+modSv = cbind(mod,svafit$sv)
+mod0Sv = cbind(mod0,svafit$sv)
+
+p <- f.pvalue(df$data,mod,mod0)
+p0 <- f.pvalue(df$data,modSv,mod0Sv)
+
+z <- t(apply(df$data,1,function(x){scale(x,center = T,scale = diff(range(x)))}))
+z0 <- t(apply(df$dataCorrected,1,function(x){scale(x,center = T,scale = diff(range(x)))}))
+
+t1 <- rowttests(z,lv)
+tc1 <- rowttests(z0,lv)
+
+t <- rowttests(df$data,lv)
+tc <- rowttests(df$dataCorrected,lv)
+
+mean1 <- apply(df$data[,1:6],1,mean)
+mean2 <- apply(df$data[,7:12],1,mean)
+fc <- mean2/mean1
+
+mean3 <- apply(df$dataCorrected[,1:6],1,mean)
+mean4 <- apply(df$dataCorrected[,7:12],1,mean)
+fc2 <- mean4/mean3
+
+# mean5 <- apply(z[,1:6],1,mean)
+# mean6 <- apply(z[,7:12],1,mean)
+# fc3 <- mean6/mean5
+# 
+# mean7 <- apply(z0[,1:6],1,mean)
+# mean8 <- apply(z0[,7:12],1,mean)
+# fc4 <- mean8/mean7
+
+plot(-log10(t1$p.value)~log2(fc),cex=.8, pch=16, col = 'red',xlab="log2(FC)",ylab = "-log10(p value)")
+points(-log10(tc1$p.value)~log2(fc2),cex=.8, pch=16)
+
+# plot(-log10(t1$p.value)~log2(fc3),cex=.8, pch=16, col = 'red',xlab="log2(FC)",ylab = "-log10(p value)")
+# points(-log10(tc1$p.value)~log2(fc4),cex=.8, pch=16)
+
+plot(t$dm,-log10(t$p.value),cex=.8, pch=16, col = 'red',xlab="difference in means",ylab = "-log10(p value)")
+points(tc$dm,-log10(tc$p.value),cex=.8, pch=16)
+
+plot(t1$dm,-log10(t1$p.value),cex=.8, pch=16, col = 'red',xlab="difference in means",ylab = "-log10(p value)")
+points(tc1$dm,-log10(tc1$p.value),cex=.8, pch=16)
+
+lmfit <- lmFit(df$data,modSv)
+eb <- eBayes(lmfit)
+
+limmares <- data.frame(dm=coef(eb)[,"lvWT"], p.value=eb$F.p.value)
+
+limmares2 <- data.frame(dm=coef(lmfit)[,"lvWT"], p.value=df$`p-valuesCorrected`)
+
+plot((limmares2$dm),-log10(limmares2$p.value),cex=.8, pch=16, col = 'red',xlab="difference in means")
+points((limmares$dm),-log10(limmares$p.value),cex=.8, pch=16, xlab="difference in means")
+
+lmfit2 <- lmFit(df$data,mod)
+eb2 <- eBayes(lmfit2)
+
+limmares <- data.frame(dm=coef(eb2)[,"lvWT"], p.value=eb2$p.value[,'lvWT'])
+
+limmares2 <- data.frame(dm=coef(lmfit2)[,"lvWT"], p.value=df$`p-values`)
+
+plot((limmares2$dm),-log10(limmares2$p.value),cex=.8, pch=16, col = 'red',xlab="difference in means")
+points((limmares$dm),-log10(limmares$p.value),cex=.8, pch=16, xlab="difference in means")
+abline(h=2,v=c(-.2,.2), lty=2)
+```
+
+
+## 注释
+
+注释面临的问题包括但不限于同位素峰、共流出、源内裂解、加合峰。目前的注释思路有两种，一种基于数据库，在消除掉同位素与加合峰影响后选取最大的分子离子峰然后进行特定数据库如HMDB进行质量数检索，例如MAIT，也可以通过多级质谱解卷积后进行谱库相似度比对，例如GNPS。另一种思路则是基于聚类或相似度分析，然后再结合质量亏损、同位素等信息由数据驱动去进行注释并评价可信度，这里面xMSannotator、Ramcluster（多级质谱）都可以做到，此外也有基于多级质谱碎裂规律预测分析结构的方法如csi-fingerid（http://www.csi-fingerid.org/）进行结构预测。
+
+## 通路分析
+
+两种思路，一种基于标注数据与KEGG等已有代谢网络进行映射，观察差异物质对哪些代谢网络有影响，这个metaboanalyst上提供了接口；另一种则基于峰数据直接映射，然后挖掘潜在网络结构，这个功能mummichog提供，不过是基于python的。
+
 ## 进一步
 
 如果要进行进一步的数据分析，需要考虑下面几个影响因素：
 
 - 错误发现率（FDR）的控制
-- 质谱峰的聚类
-- 质谱峰的注释与数据库检索定性
-- 代谢通路分析
 - 不同组学的耦合
+
+## 原始算法 
+
+```{r tidyvers}
+library(tidyverse)
+p = ggplot(a,aes(x=a$KOmean,y=a$`KOrsd%`)) +
+        ggtitle("Mean vs. RSD%") +
+        xlab("log10(Mean)") +
+        ylab("rsd%")
+p1 = p + 
+  geom_point(alpha = 0.5, colour="orange")+
+        geom_density2d()
+p1
+
+p2 = p +
+  geom_density2d()
+p2
+
+p3 = p + geom_point(alpha = 0.5, colour="purple") 
+p3
+
+p4 = p +
+  stat_bin_hex(colour="white", na.rm=TRUE) +
+  scale_fill_gradientn(colours=c("red","orange"), name = "Frequency", na.value=NA)
+p4
+
+smoothScatter(x=a$KOmean,y=a$`KOrsd%`)
+```
+
+
+
+```{r}
+# get data from xcmsxset object
+getRAW <- function(xset,lv){
+        lsa <- list()
+        index <- 0
+        m <- length(table(lv))
+        for(i in 1:m){
+                if(i == 1){
+                        index <- index
+                }else{
+                        index <- index+table(lv)[i-1]
+                }
+                ls <- list()
+                for(j in 1:table(lv)[i]){
+                        RAW <- getXcmsRaw(xset,sampleidx=j+index)
+                        RAWdata <- RAW@env$profile
+                        colnames(RAWdata) <- RAW@scantime
+                        rownames(RAWdata) <- seq(RAW@mzrange[1],RAW@mzrange[2],0.1)
+                        ls[[j]] <- RAWdata
+                }
+                lsa[[i]] <- ls
+        }
+        return(lsa)
+}
+# align data from some xcmsxset object
+getalign <- function(list){
+        a <- lapply(list,rownames)
+        c <- Reduce(intersect,a)
+        e <- lapply(list,function(x){x[c,]})
+        return(e)
+}
+```
+
